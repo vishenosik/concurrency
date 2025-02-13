@@ -1,0 +1,39 @@
+version: "3"
+
+dotenv: ['.env']
+
+tasks:
+
+  # TESTING
+
+  test:
+    desc: Test all packages
+    cmd: sh scripts/testing.sh $COVERAGE_FILE
+  
+  test-coverage:
+    desc: Generates coverage html after testing
+    aliases: [cover]
+    deps:
+      - test
+    cmd: go tool cover -html=$COVERAGE_FILE
+
+  # bench:
+  #   desc: Run benchmarks
+  #   cmd: go test -bench . -benchmem ./internal/lib/collections -cpuprofile=./profiles/cpu.out -memprofile=./profiles/mem.out
+
+  # prof:
+  #   desc: Use pprof 
+  #   cmds:
+  #     - go tool pprof --pdf ./profiles/cpu.out > ./profiles/cpu-prof.pdf
+  #     - go tool pprof --pdf ./profiles/mem.out > ./profiles/mem-prof.pdf 
+
+  mock:
+    desc: Generates all mocks
+    cmd: go generate ./...
+
+  # TOOLS
+
+  lint:
+    desc: Lint all files
+    cmd: fieldalignment -fix ./...
+    ignore_error: true
