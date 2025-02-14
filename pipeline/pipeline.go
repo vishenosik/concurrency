@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
 	"iter"
 	"log"
 	"sync"
@@ -95,7 +94,6 @@ func (pln *pipeline[Type]) stop(graceful bool) bool {
 		pln.cancel()
 	}
 	<-pln.done
-	fmt.Println("Pipeline finished")
 	pln.running = false
 	pln.cancel()
 	return true
