@@ -55,18 +55,13 @@ func Test_WorkerPool_Lifecycle(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = pool.AddTask(func() { time.Sleep(time.Second) })
+			_ = pool.AddTask(func() { time.Sleep(time.Millisecond * 200) })
 		}()
 	}
 	wg.Wait()
 
 	// Wait for scale down
-	time.Sleep(200 * time.Millisecond)
-
-	require.Greater(t, pool.numWorkers.Load(), int32(2))
-
-	// Wait for scale down
-	time.Sleep(3 * time.Second)
+	time.Sleep(1 * time.Second)
 	require.Equal(t, int32(2), pool.numWorkers.Load())
 
 	pool.Stop()

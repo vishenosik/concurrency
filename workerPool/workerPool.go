@@ -21,6 +21,7 @@ type Task func()
 type Pool struct {
 	// workers control
 	numWorkers  atomic.Int32
+	mu          sync.RWMutex // protects min/max workers
 	minWorkers  int32
 	maxWorkers  int32
 	initWorkers int32
@@ -107,11 +108,23 @@ func (p *Pool) Start() {
 	}
 
 	go func() {
+		defer func() {
+			close(p.taskCH)
+		}()
 		for {
+			if p.closed.Load() {
+				return
+			}
 			select {
 			case <-p.ctx.Done():
 				return
 			case p.taskCH <- <-p.bufferCH:
+				// if !ok {
+				// 	return
+				// }
+				// if !p.closed.Load() {
+				// 	p.taskCH <- task
+				// }
 			case <-time.After(p.upTimeout):
 				p.addWorker()
 			}
@@ -120,14 +133,14 @@ func (p *Pool) Start() {
 
 	go func() {
 		p.wg.Wait()
-		close(p.taskCH)
 		p.close()
+		close(p.bufferCH)
 	}()
 }
 
 func (p *Pool) close() {
 	if p.closed.Swap(true) {
-		return // already closed
+		return
 	}
 
 	p.cancelCtx()
@@ -168,8 +181,6 @@ func (p *Pool) addWorker() {
 }
 
 func (p *Pool) worker(id int32) {
-	log.Printf("worker %d started", id)
-	defer log.Printf("worker %d stopped", id)
 
 	timer := time.NewTimer(p.downTimeout)
 	defer timer.Stop()
@@ -207,10 +218,43 @@ func (p *Pool) worker(id int32) {
 	}
 }
 
+// Update canScaleUp/Down to use RLock
 func (p *Pool) canScaleUp() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.numWorkers.Load() < p.maxWorkers
 }
 
 func (p *Pool) canScaleDown() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.numWorkers.Load() > p.minWorkers
+}
+
+// New methods for dynamic adjustment
+func (p *Pool) SetMinWorkers(n int32) {
+	if n < 1 || n > p.maxWorkers {
+		return
+	}
+
+	p.mu.Lock()
+	p.minWorkers = n
+	p.mu.Unlock()
+}
+
+func (p *Pool) SetMaxWorkers(n int32) {
+	if n < p.minWorkers {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	oldMax := p.maxWorkers
+	p.maxWorkers = n
+
+	// If we increased max workers, maybe scale up
+	if n > oldMax && len(p.bufferCH) > 0 {
+		p.addWorker()
+	}
 }
