@@ -16,7 +16,27 @@ var (
 	ErrPoolClosed = errors.New("worker pool is closed")
 )
 
-// Add priority types
+type internalPoolMetrics struct {
+	mu             sync.Mutex
+	WorkersCurrent int32
+	WorkersMin     int32
+	WorkersMax     int32
+	QueueDepth     int
+	HighQueueDepth int
+	TasksProcessed atomic.Int64
+	TasksFailed    atomic.Int64
+}
+
+type PoolMetrics struct {
+	WorkersCurrent int32
+	WorkersMin     int32
+	WorkersMax     int32
+	QueueDepth     int
+	HighQueueDepth int
+	TasksProcessed int64
+	TasksFailed    int64
+}
+
 type Priority int
 
 const (
@@ -53,6 +73,9 @@ type Pool struct {
 	// context
 	ctx       context.Context
 	cancelCtx context.CancelFunc
+
+	// Metrics
+	metrics internalPoolMetrics
 
 	// synchronization
 	wg sync.WaitGroup
@@ -134,12 +157,6 @@ func (p *Pool) Start() {
 			case <-p.ctx.Done():
 				return
 			case p.taskCH <- <-p.bufferCH:
-				// if !ok {
-				// 	return
-				// }
-				// if !p.closed.Load() {
-				// 	p.taskCH <- task
-				// }
 			case <-time.After(p.upTimeout):
 				p.addWorker()
 			}
@@ -194,13 +211,13 @@ func (p *Pool) addWorker() {
 	}
 
 	p.wg.Add(1)
-	p.numWorkers.Add(1)
+	workerID := p.numWorkers.Add(1)
 
 	go func() {
 		defer p.wg.Done()
 		defer p.numWorkers.Add(-1)
 
-		p.worker(p.numWorkers.Load())
+		p.worker(workerID)
 	}()
 }
 
@@ -212,17 +229,18 @@ func (p *Pool) worker(id int32) {
 	for {
 		select {
 		// Check high priority first
-		case task := <-p.priorBufferCH:
-			task()
-			timer.Reset(p.downTimeout)
+		case task, ok := <-p.priorBufferCH:
+			if !ok {
+				return
+			}
+			p.executeTask(id, task, timer)
 
 		// Then normal priority
 		case task, ok := <-p.taskCH:
 			if !ok {
 				return
 			}
-			task()
-			timer.Reset(p.downTimeout)
+			p.executeTask(id, task, timer)
 
 		case <-p.ctx.Done():
 			return
@@ -231,28 +249,28 @@ func (p *Pool) worker(id int32) {
 				return
 			}
 			timer.Reset(p.downTimeout)
-		case task, ok := <-p.taskCH:
-			if !ok {
-				return
-			}
-
-			// Execute task with panic recovery
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						log.Printf("worker %d: task panicked: %v", id, r)
-					}
-				}()
-				task()
-			}()
-
-			// Reset timer after successful task execution
-			if !timer.Stop() {
-				<-timer.C
-			}
-			timer.Reset(p.downTimeout)
 		}
 	}
+}
+
+func (p *Pool) executeTask(workerID int32, task TaskFunc, timer *time.Timer) {
+	// Execute task with panic recovery
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("worker %d: task panicked: %v", workerID, r)
+				p.metrics.TasksFailed.Add(1)
+			}
+		}()
+		task()
+		p.metrics.TasksProcessed.Add(1)
+	}()
+
+	// Reset timer after successful task execution
+	if !timer.Stop() {
+		<-timer.C
+	}
+	timer.Reset(p.downTimeout)
 }
 
 // Update canScaleUp/Down to use RLock
@@ -293,5 +311,20 @@ func (p *Pool) SetMaxWorkers(n int32) {
 	// If we increased max workers, maybe scale up
 	if n > oldMax && len(p.bufferCH) > 0 {
 		p.addWorker()
+	}
+}
+
+func (p *Pool) GetMetrics() PoolMetrics {
+	p.metrics.mu.Lock()
+	defer p.metrics.mu.Unlock()
+
+	return PoolMetrics{
+		WorkersCurrent: p.numWorkers.Load(),
+		WorkersMin:     p.minWorkers,
+		WorkersMax:     p.maxWorkers,
+		QueueDepth:     len(p.taskCH),
+		HighQueueDepth: len(p.priorBufferCH),
+		TasksProcessed: p.metrics.TasksProcessed.Load(),
+		TasksFailed:    p.metrics.TasksFailed.Load(),
 	}
 }
