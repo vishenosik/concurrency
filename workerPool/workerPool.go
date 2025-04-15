@@ -16,7 +16,20 @@ var (
 	ErrPoolClosed = errors.New("worker pool is closed")
 )
 
-type Task func()
+// Add priority types
+type Priority int
+
+const (
+	PriorityLow Priority = iota
+	PriorityHigh
+)
+
+type TaskFunc func()
+
+type Task struct {
+	TaskFunc TaskFunc
+	Priority Priority
+}
 
 type Pool struct {
 	// workers control
@@ -32,9 +45,10 @@ type Pool struct {
 	taskTimeout time.Duration
 
 	// channels
-	bufferCH chan Task
-	taskCH   chan Task
-	closed   atomic.Bool
+	priorBufferCH chan TaskFunc
+	bufferCH      chan TaskFunc
+	taskCH        chan TaskFunc
+	closed        atomic.Bool
 
 	// context
 	ctx       context.Context
@@ -48,14 +62,15 @@ type PoolOption func(*Pool)
 
 func defaultWP() *Pool {
 	return &Pool{
-		minWorkers:  3,
-		maxWorkers:  256,
-		initWorkers: 10,
-		upTimeout:   time.Millisecond * 20,
-		downTimeout: time.Millisecond * 100,
-		taskTimeout: time.Second * 15,
-		taskCH:      make(chan Task),
-		bufferCH:    make(chan Task, 1024),
+		minWorkers:    3,
+		maxWorkers:    256,
+		initWorkers:   10,
+		upTimeout:     time.Millisecond * 20,
+		downTimeout:   time.Millisecond * 100,
+		taskTimeout:   time.Second * 15,
+		taskCH:        make(chan TaskFunc),
+		bufferCH:      make(chan TaskFunc, 1024),
+		priorBufferCH: make(chan TaskFunc, 1024),
 	}
 }
 
@@ -155,10 +170,19 @@ func (p *Pool) AddTask(task Task) error {
 		return ErrPoolClosed
 	}
 
+	if task.Priority == PriorityHigh {
+		select {
+		case p.priorBufferCH <- task.TaskFunc:
+			return nil
+		case <-p.ctx.Done():
+			return p.ctx.Err()
+		}
+	}
+
 	select {
 	case <-p.ctx.Done():
 		return p.ctx.Err()
-	case p.bufferCH <- task:
+	case p.bufferCH <- task.TaskFunc:
 		return nil
 	}
 
@@ -187,6 +211,19 @@ func (p *Pool) worker(id int32) {
 
 	for {
 		select {
+		// Check high priority first
+		case task := <-p.priorBufferCH:
+			task()
+			timer.Reset(p.downTimeout)
+
+		// Then normal priority
+		case task, ok := <-p.taskCH:
+			if !ok {
+				return
+			}
+			task()
+			timer.Reset(p.downTimeout)
+
 		case <-p.ctx.Done():
 			return
 		case <-timer.C:
