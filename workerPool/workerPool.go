@@ -109,10 +109,10 @@ type Pool struct {
 	taskTimeout time.Duration
 
 	// channels
-	priorBufferCH chan Task
-	bufferCH      chan Task
-	taskCH        chan Task
-	closed        atomic.Bool
+	bufferCH_1 chan Task
+	bufferCH_0 chan Task
+	taskCH     chan Task
+	closed     atomic.Bool
 
 	// context
 	ctx       context.Context
@@ -131,15 +131,15 @@ type PoolOption func(*Pool)
 
 func defaultWP() *Pool {
 	return &Pool{
-		minWorkers:    3,
-		maxWorkers:    256,
-		initWorkers:   10,
-		upTimeout:     time.Millisecond * 20,
-		downTimeout:   time.Millisecond * 100,
-		taskTimeout:   time.Second * 15,
-		taskCH:        make(chan Task),
-		bufferCH:      make(chan Task, 1024),
-		priorBufferCH: make(chan Task, 1024),
+		minWorkers:  3,
+		maxWorkers:  256,
+		initWorkers: 10,
+		upTimeout:   time.Millisecond * 20,
+		downTimeout: time.Millisecond * 100,
+		taskTimeout: time.Second * 15,
+		taskCH:      make(chan Task),
+		bufferCH_0:  make(chan Task, 1024),
+		bufferCH_1:  make(chan Task, 1024),
 	}
 }
 
@@ -202,7 +202,7 @@ func (p *Pool) Start() {
 			select {
 			case <-p.ctx.Done():
 				return
-			case p.taskCH <- <-p.bufferCH:
+			case p.taskCH <- <-p.bufferCH_0:
 			case <-time.After(p.upTimeout):
 				p.addWorker()
 			}
@@ -212,7 +212,7 @@ func (p *Pool) Start() {
 	go func() {
 		p.wg.Wait()
 		p.close()
-		close(p.bufferCH)
+		close(p.bufferCH_0)
 	}()
 }
 
@@ -239,7 +239,7 @@ func (p *Pool) AddTask(task Task) (string, error) {
 
 	if task.Priority == PriorityHigh {
 		select {
-		case p.priorBufferCH <- task:
+		case p.bufferCH_1 <- task:
 			return task.ID, nil
 		case <-p.ctx.Done():
 			return "", p.ctx.Err()
@@ -247,7 +247,7 @@ func (p *Pool) AddTask(task Task) (string, error) {
 	}
 
 	select {
-	case p.bufferCH <- task:
+	case p.bufferCH_0 <- task:
 		return task.ID, nil
 	case <-p.ctx.Done():
 		return "", p.ctx.Err()
@@ -300,7 +300,7 @@ func (p *Pool) worker(id int32) {
 
 		select {
 		// Check high priority first
-		case task, ok := <-p.priorBufferCH:
+		case task, ok := <-p.bufferCH_1:
 			if !ok {
 				return
 			}
@@ -315,6 +315,7 @@ func (p *Pool) worker(id int32) {
 
 		case <-p.ctx.Done():
 			return
+
 		case <-timer.C:
 			if p.canScaleDown() {
 				return
@@ -363,30 +364,21 @@ func (p *Pool) canScaleDown() bool {
 
 // New methods for dynamic adjustment
 func (p *Pool) SetMinWorkers(n int32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if n < 1 || n > p.maxWorkers {
 		return
 	}
-
-	p.mu.Lock()
 	p.minWorkers = n
-	p.mu.Unlock()
 }
 
 func (p *Pool) SetMaxWorkers(n int32) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if n < p.minWorkers {
 		return
 	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	oldMax := p.maxWorkers
 	p.maxWorkers = n
-
-	// If we increased max workers, maybe scale up
-	if n > oldMax && len(p.bufferCH) > 0 {
-		p.addWorker()
-	}
 }
 
 func (p *Pool) GetMetrics() PoolMetrics {
@@ -397,8 +389,8 @@ func (p *Pool) GetMetrics() PoolMetrics {
 		WorkersCurrent: p.numWorkers.Load(),
 		WorkersMin:     p.minWorkers,
 		WorkersMax:     p.maxWorkers,
-		QueueDepth:     len(p.bufferCH),
-		HighQueueDepth: len(p.priorBufferCH),
+		QueueDepth:     len(p.bufferCH_0),
+		HighQueueDepth: len(p.bufferCH_1),
 		TasksProcessed: p.metrics.TasksProcessed.Load(),
 		TasksFailed:    p.metrics.TasksFailed.Load(),
 	}
