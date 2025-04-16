@@ -55,7 +55,7 @@ func Test_WorkerPool_Lifecycle(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = pool.AddTask(Task{TaskFunc: func() { time.Sleep(time.Millisecond * 200) }})
+			_, _ = pool.AddTask(Task{Func: func() { time.Sleep(time.Millisecond * 200) }})
 		}()
 	}
 	wg.Wait()
@@ -67,7 +67,7 @@ func Test_WorkerPool_Lifecycle(t *testing.T) {
 	pool.Stop()
 
 	// Verify pool is closed
-	err := pool.AddTask(Task{TaskFunc: func() {}})
+	_, err := pool.AddTask(Task{Func: func() {}})
 	require.ErrorIs(t, err, ErrPoolClosed)
 }
 
@@ -77,7 +77,7 @@ func Test_WorkerPool_TaskExecution(t *testing.T) {
 	defer pool.Stop()
 
 	var executed atomic.Bool
-	err := pool.AddTask(Task{TaskFunc: func() { executed.Store(true) }})
+	_, err := pool.AddTask(Task{Func: func() { executed.Store(true) }})
 	require.NoError(t, err)
 
 	time.Sleep(50 * time.Millisecond)
@@ -97,7 +97,7 @@ func Test_WorkerPool_ConcurrentTaskSubmission(t *testing.T) {
 	for range numTasks {
 		go func() {
 			defer wg.Done()
-			err := pool.AddTask(Task{TaskFunc: func() { counter.Add(1) }})
+			_, err := pool.AddTask(Task{Func: func() { counter.Add(1) }})
 			assert.NoError(t, err)
 		}()
 	}
@@ -116,7 +116,7 @@ func Test_WorkerPool_ContextCancellation(t *testing.T) {
 	cancel()
 	time.Sleep(time.Millisecond * 50)
 
-	err := pool.AddTask(Task{TaskFunc: func() {}})
+	_, err := pool.AddTask(Task{Func: func() {}})
 	require.ErrorIs(t, err, ErrPoolClosed)
 }
 
@@ -128,7 +128,7 @@ func Test_WorkerPool_PanicRecovery(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
-	err := pool.AddTask(Task{TaskFunc: func() {
+	_, err := pool.AddTask(Task{Func: func() {
 		defer wg.Done()
 		panic("test panic")
 	}})
@@ -142,7 +142,7 @@ func Test_WorkerPool_CloseBehavior(t *testing.T) {
 	pool.Start()
 
 	// Add task before closing
-	err := pool.AddTask(Task{TaskFunc: func() {}})
+	_, err := pool.AddTask(Task{Func: func() {}})
 	require.NoError(t, err)
 
 	pool.Stop()
@@ -166,7 +166,7 @@ func BenchmarkWorkerPool(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = pool.AddTask(Task{TaskFunc: func() {
+			_, _ = pool.AddTask(Task{Func: func() {
 				// Simulate work
 				time.Sleep(10 * time.Microsecond)
 			}})
@@ -182,7 +182,7 @@ func BenchmarkWorkerPoolHeavyWork(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			_ = pool.AddTask(Task{TaskFunc: func() {
+			_, _ = pool.AddTask(Task{Func: func() {
 				// Simulate heavier work
 				time.Sleep(1 * time.Millisecond)
 			}})
@@ -200,7 +200,7 @@ func BenchmarkWorkerPoolScaleUp(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = pool.AddTask(Task{TaskFunc: func() {
+		_, _ = pool.AddTask(Task{Func: func() {
 			time.Sleep(100 * time.Microsecond)
 		}})
 	}

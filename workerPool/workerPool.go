@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -17,7 +18,7 @@ var (
 )
 
 type internalPoolMetrics struct {
-	mu             sync.Mutex
+	// mu             sync.Mutex
 	WorkersCurrent int32
 	WorkersMin     int32
 	WorkersMax     int32
@@ -44,10 +45,53 @@ const (
 	PriorityHigh
 )
 
-type TaskFunc func()
+func (pr Priority) String() string {
+	switch pr {
+	case PriorityLow:
+		return "low"
+	case PriorityHigh:
+		return "high"
+	default:
+		return "undefined"
+	}
+}
+
+type WorkerStatus int
+
+const (
+	StatusIdle WorkerStatus = iota
+	StatusWorking
+	StatusTerminated
+)
+
+func (ws WorkerStatus) String() string {
+	switch ws {
+	case StatusIdle:
+		return "idle"
+	case StatusWorking:
+		return "working"
+	case StatusTerminated:
+		return "terminated"
+	default:
+		return "undefined"
+	}
+}
+
+type WorkerStats struct {
+	ID              int32
+	StartTime       time.Time
+	LastActivity    time.Time
+	TasksHandled    int64
+	Status          WorkerStatus
+	CurrentTask     string // task description or ID
+	PanicsRecovered int64
+}
+
+type Func func()
 
 type Task struct {
-	TaskFunc TaskFunc
+	ID       string
+	Func     Func
 	Priority Priority
 }
 
@@ -65,9 +109,9 @@ type Pool struct {
 	taskTimeout time.Duration
 
 	// channels
-	priorBufferCH chan TaskFunc
-	bufferCH      chan TaskFunc
-	taskCH        chan TaskFunc
+	priorBufferCH chan Task
+	bufferCH      chan Task
+	taskCH        chan Task
 	closed        atomic.Bool
 
 	// context
@@ -76,6 +120,8 @@ type Pool struct {
 
 	// Metrics
 	metrics internalPoolMetrics
+
+	workerStats sync.Map // map[int32]*WorkerStats
 
 	// synchronization
 	wg sync.WaitGroup
@@ -91,9 +137,9 @@ func defaultWP() *Pool {
 		upTimeout:     time.Millisecond * 20,
 		downTimeout:   time.Millisecond * 100,
 		taskTimeout:   time.Second * 15,
-		taskCH:        make(chan TaskFunc),
-		bufferCH:      make(chan TaskFunc, 1024),
-		priorBufferCH: make(chan TaskFunc, 1024),
+		taskCH:        make(chan Task),
+		bufferCH:      make(chan Task, 1024),
+		priorBufferCH: make(chan Task, 1024),
 	}
 }
 
@@ -182,25 +228,29 @@ func (p *Pool) Stop() {
 	p.close()
 }
 
-func (p *Pool) AddTask(task Task) error {
+func (p *Pool) AddTask(task Task) (string, error) {
 	if p.closed.Load() {
-		return ErrPoolClosed
+		return "", ErrPoolClosed
+	}
+
+	if task.ID == "" {
+		task.ID = fmt.Sprintf("task_%d_%s", time.Now().UnixNano(), task.Priority)
 	}
 
 	if task.Priority == PriorityHigh {
 		select {
-		case p.priorBufferCH <- task.TaskFunc:
-			return nil
+		case p.priorBufferCH <- task:
+			return task.ID, nil
 		case <-p.ctx.Done():
-			return p.ctx.Err()
+			return "", p.ctx.Err()
 		}
 	}
 
 	select {
+	case p.bufferCH <- task:
+		return task.ID, nil
 	case <-p.ctx.Done():
-		return p.ctx.Err()
-	case p.bufferCH <- task.TaskFunc:
-		return nil
+		return "", p.ctx.Err()
 	}
 
 }
@@ -213,9 +263,23 @@ func (p *Pool) addWorker() {
 	p.wg.Add(1)
 	workerID := p.numWorkers.Add(1)
 
+	// Initialize worker stats
+	stats := &WorkerStats{
+		ID:        workerID,
+		StartTime: time.Now(),
+	}
+	p.workerStats.Store(workerID, stats)
+
 	go func() {
 		defer p.wg.Done()
 		defer p.numWorkers.Add(-1)
+		defer func() {
+			if stats, ok := p.workerStats.Load(workerID); ok {
+				ws := stats.(*WorkerStats)
+				ws.Status = StatusTerminated
+				ws.LastActivity = time.Now()
+			}
+		}()
 
 		p.worker(workerID)
 	}()
@@ -223,24 +287,31 @@ func (p *Pool) addWorker() {
 
 func (p *Pool) worker(id int32) {
 
+	stats, _ := p.workerStats.Load(id)
+	ws := stats.(*WorkerStats)
+
 	timer := time.NewTimer(p.downTimeout)
 	defer timer.Stop()
 
 	for {
+		ws.Status = StatusIdle
+		ws.LastActivity = time.Now()
+		ws.CurrentTask = ""
+
 		select {
 		// Check high priority first
 		case task, ok := <-p.priorBufferCH:
 			if !ok {
 				return
 			}
-			p.executeTask(id, task, timer)
+			p.executeTask(ws, task, timer)
 
 		// Then normal priority
 		case task, ok := <-p.taskCH:
 			if !ok {
 				return
 			}
-			p.executeTask(id, task, timer)
+			p.executeTask(ws, task, timer)
 
 		case <-p.ctx.Done():
 			return
@@ -253,18 +324,22 @@ func (p *Pool) worker(id int32) {
 	}
 }
 
-func (p *Pool) executeTask(workerID int32, task TaskFunc, timer *time.Timer) {
+func (p *Pool) executeTask(ws *WorkerStats, task Task, timer *time.Timer) {
+
+	ws.Status = StatusWorking
+	ws.CurrentTask = task.ID
+	ws.LastActivity = time.Now()
+
 	// Execute task with panic recovery
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("worker %d: task panicked: %v", workerID, r)
-				p.metrics.TasksFailed.Add(1)
-			}
-		}()
-		task()
-		p.metrics.TasksProcessed.Add(1)
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("worker %d: task panicked: %v", ws.ID, r)
+			p.metrics.TasksFailed.Add(1)
+		}
 	}()
+	task.Func()
+	p.metrics.TasksProcessed.Add(1)
 
 	// Reset timer after successful task execution
 	if !timer.Stop() {
@@ -315,14 +390,14 @@ func (p *Pool) SetMaxWorkers(n int32) {
 }
 
 func (p *Pool) GetMetrics() PoolMetrics {
-	p.metrics.mu.Lock()
-	defer p.metrics.mu.Unlock()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
 	return PoolMetrics{
 		WorkersCurrent: p.numWorkers.Load(),
 		WorkersMin:     p.minWorkers,
 		WorkersMax:     p.maxWorkers,
-		QueueDepth:     len(p.taskCH),
+		QueueDepth:     len(p.bufferCH),
 		HighQueueDepth: len(p.priorBufferCH),
 		TasksProcessed: p.metrics.TasksProcessed.Load(),
 		TasksFailed:    p.metrics.TasksFailed.Load(),
