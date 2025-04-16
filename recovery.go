@@ -1,4 +1,4 @@
-package pipeline
+package concurrency
 
 type Recoverer interface {
 	Recover(message any)

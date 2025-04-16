@@ -1,4 +1,4 @@
-package pipeline
+package concurrency
 
 func (pln *pipeline[Type]) SetSteps(steps ...handlerFunc[Type]) *pipeline[Type] {
 	pln.steps = steps
