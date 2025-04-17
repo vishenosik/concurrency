@@ -5,16 +5,21 @@ import (
 	"iter"
 	"log"
 	"sync"
-
-	"golang.org/x/exp/constraints"
 )
 
-func MergeChannels[Type any, Uint constraints.Unsigned](
+type Unsigned interface {
+	~uint | ~uint8 | ~uint16 | ~uint32 | ~uint64
+}
+
+func MergeChannels[Type any, Uint Unsigned](
 	ctx context.Context,
 	bufsize Uint,
 	channels ...chan Type,
 ) <-chan Type {
 
+	if bufsize <= 0 {
+		bufsize = 1
+	}
 	res := make(chan Type, bufsize)
 
 	wg := sync.WaitGroup{}
@@ -35,7 +40,7 @@ func MergeChannels[Type any, Uint constraints.Unsigned](
 	return res
 }
 
-func MergeChannelsIter[Type any, Uint constraints.Unsigned](
+func MergeChannelsIter[Type any, Uint Unsigned](
 	ctx context.Context,
 	bufsize Uint,
 	channels ...chan Type,
