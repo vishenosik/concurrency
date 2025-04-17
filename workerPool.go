@@ -87,7 +87,7 @@ type WorkerStats struct {
 	PanicsRecovered int64
 }
 
-type Func func()
+type Func = func()
 
 type Task struct {
 	ID       string
