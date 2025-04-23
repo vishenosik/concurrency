@@ -1,133 +1,167 @@
 package concurrency
 
-// import (
-// 	"log"
-// 	"sync"
-// 	"time"
-// )
+import (
+	"container/heap"
+	"log"
+	"sync"
+	"time"
+)
 
-// type Queue interface {
-// 	Pop() (Executor, bool)
-// 	Push(task Executor)
-// 	Reschedule(task Executor)
-// 	Len() int
-// 	Next() Executor
-// }
+type Queuer interface {
+	NextRun() (time.Time, bool)
+	Execute()
+	AddChan() <-chan struct{}
+}
 
-// type Executor interface {
-// 	Execute()
-// 	NextRun() time.Time
-// }
+type Scheduler_v2 struct {
+	queue       Queuer
+	idleTimeout time.Duration
+	stopCH      chan struct{}
+	wg          sync.WaitGroup
+}
 
-// type Scheduler struct {
-// 	mu    sync.Mutex
-// 	queue Queue
+func defaultScheduler() *Scheduler_v2 {
+	return &Scheduler_v2{
+		idleTimeout: time.Hour,
+		stopCH:      make(chan struct{}),
+	}
+}
 
-// 	addCH  chan Executor
-// 	stopCH chan struct{}
+type SchedulerOption func(*Scheduler_v2)
 
-// 	wg sync.WaitGroup
-// }
+func NewScheduler_v2(queuer Queuer, opts ...SchedulerOption) *Scheduler_v2 {
+	scheduler := defaultScheduler()
+	scheduler.queue = queuer
+	for _, opt := range opts {
+		opt(scheduler)
+	}
+	return scheduler
+}
 
-// func NewScheduler() *Scheduler {
-// 	return &Scheduler{
-// 		addCH:  make(chan Executor, 1),
-// 		stopCH: make(chan struct{}),
-// 	}
-// }
+func (s *Scheduler_v2) Start() {
+	s.wg.Add(1)
+	go s.run()
+}
 
-// func (s *Scheduler) Start() {
-// 	s.wg.Add(1)
-// 	go s.run()
-// }
+func (s *Scheduler_v2) Stop() {
+	close(s.stopCH)
+	s.wg.Wait()
+}
 
-// func (s *Scheduler) Stop() {
-// 	close(s.stopCH)
-// 	s.wg.Wait()
-// }
+func (s *Scheduler_v2) run() {
+	defer s.wg.Done()
 
-// func (s *Scheduler) AddJob(task Executor) {
-// 	s.addCH <- task
-// }
+	timer := time.NewTimer(0)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
 
-// func (s *Scheduler) run() {
-// 	defer s.wg.Done()
+	for {
 
-// 	timer := time.NewTimer(0)
-// 	if !timer.Stop() {
-// 		<-timer.C
-// 	}
-// 	defer timer.Stop()
+		next, ok := s.queue.NextRun()
+		if ok {
+			timer.Reset(time.Until(next))
+		} else {
+			timer.Reset(s.idleTimeout)
+		}
 
-// 	for {
-// 		s.mu.Lock()
+		select {
+		case <-s.stopCH:
+			return
+		case <-s.queue.AddChan():
+		case <-timer.C:
+			s.runJob()
+		}
+	}
+}
 
-// 		log.Println("task queue state", s.queue)
+func (s *Scheduler_v2) runJob() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Job panicked: %v\n", r)
+		}
+	}()
+	s.queue.Execute()
+}
 
-// 		if s.queue.Len() > 0 {
-// 			timer.Reset(time.Until(s.queue.Next().NextRun()))
-// 		} else {
-// 			timer.Reset(time.Hour) // Long duration when empty
-// 		}
-// 		s.mu.Unlock()
+type Jobs []*Job
 
-// 		select {
-// 		case <-s.stopCH:
-// 			return
+func (jb Jobs) Len() int           { return len(jb) }
+func (jb Jobs) Less(i, j int) bool { return jb[i].NextRun.Before(jb[j].NextRun) }
+func (jb Jobs) Swap(i, j int)      { jb[i], jb[j] = jb[j], jb[i] }
 
-// 		case task := <-s.addCH:
-// 			s.queue.Push(task)
+func (jb *Jobs) Push(x any) {
+	if v, ok := x.(*Job); ok {
+		*jb = append(*jb, v)
+	}
+}
 
-// 		case <-timer.C:
-// 			s.runJob()
-// 		}
-// 	}
-// }
+func (jb *Jobs) Pop() any {
+	old := *jb
+	n := len(old) - 1
+	item := old[n]
+	*jb = old[0:n]
+	return item
+}
 
-// func (s *Scheduler) runJob() {
+type HeapQueue struct {
+	mu    sync.Mutex
+	queue Jobs
+	addCH chan struct{}
+}
 
-// 	currentTask, ok := s.queue.Pop()
-// 	if !ok {
-// 		return
-// 	}
+func NewHeapQueue() *HeapQueue {
+	return &HeapQueue{
+		addCH: make(chan struct{}, 1),
+		queue: make(Jobs, 0),
+	}
+}
 
-// 	defer func() {
-// 		if r := recover(); r != nil {
-// 			log.Printf("Job panicked: %v\n", r)
-// 		}
-// 	}()
-// 	currentTask.Execute()
+func (hq *HeapQueue) AddJob(job *Job) {
+	hq.mu.Lock()
+	heap.Push(&hq.queue, job)
+	hq.mu.Unlock()
+	hq.addCH <- struct{}{}
+}
 
-// 	s.queue.Reschedule(currentTask)
-// }
+func (hq *HeapQueue) NextRun() (time.Time, bool) {
+	if len(hq.queue) <= 0 {
+		return time.Time{}, false
+	}
+	return hq.queue[0].NextRun, true
+}
 
-// type Job struct {
-// 	ID       int
-// 	interval time.Duration
-// 	lastRun  time.Time
-// 	nextRun  time.Time
-// 	job      func()
-// }
+func (s *HeapQueue) Execute() {
 
-// type HeapQueue struct {
-// 	mu    sync.Mutex
-// 	queue []*Job
-// }
+	s.mu.Lock()
+	if len(s.queue) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	currentTask := heap.Pop(&s.queue).(*Job)
+	s.mu.Unlock()
 
-// func (hq HeapQueue) Len() int           { return len(hq.queue) }
-// func (hq HeapQueue) Less(i, j int) bool { return hq.queue[i].nextRun.Before(hq.queue[j].nextRun) }
-// func (hq HeapQueue) Swap(i, j int)      { hq.queue[i], hq.queue[j] = hq.queue[j], hq.queue[i] }
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Job %d panicked: %v\n", currentTask.ID, r)
+			}
+		}()
+		currentTask.Job()
+	}()
 
-// func (hq *HeapQueue) Push(x any) {
-// 	if v, ok := x.(*Job); ok {
-// 		hq.queue = append(hq.queue, v)
-// 	}
-// }
+	log.Printf("Job %d rescheduled\n", currentTask.ID)
 
-// func (hq *HeapQueue) Pop() any {
-// 	old := hq
-// 	n := len(old) - 1
-// 	item := old[n]
-// 	*hq = old[0:n]
-// 	return item
-// }
+	now := time.Now()
+	// Reschedule the task
+	currentTask.LastRun = now
+	currentTask.NextRun = now.Add(currentTask.Interval)
+	s.mu.Lock()
+	heap.Push(&s.queue, currentTask)
+	s.mu.Unlock()
+}
+
+func (hq *HeapQueue) AddChan() <-chan struct{} {
+	return hq.addCH
+}
