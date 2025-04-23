@@ -7,82 +7,12 @@ import (
 	"time"
 )
 
-type Queuer interface {
-	NextRun() (time.Time, bool)
-	Execute()
-	AddChan() <-chan struct{}
-}
-
-type Scheduler_v2 struct {
-	queue       Queuer
-	idleTimeout time.Duration
-	stopCH      chan struct{}
-	wg          sync.WaitGroup
-}
-
-func defaultScheduler() *Scheduler_v2 {
-	return &Scheduler_v2{
-		idleTimeout: time.Hour,
-		stopCH:      make(chan struct{}),
-	}
-}
-
-type SchedulerOption func(*Scheduler_v2)
-
-func NewScheduler_v2(queuer Queuer, opts ...SchedulerOption) *Scheduler_v2 {
-	scheduler := defaultScheduler()
-	scheduler.queue = queuer
-	for _, opt := range opts {
-		opt(scheduler)
-	}
-	return scheduler
-}
-
-func (s *Scheduler_v2) Start() {
-	s.wg.Add(1)
-	go s.run()
-}
-
-func (s *Scheduler_v2) Stop() {
-	close(s.stopCH)
-	s.wg.Wait()
-}
-
-func (s *Scheduler_v2) run() {
-	defer s.wg.Done()
-
-	timer := time.NewTimer(0)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	defer timer.Stop()
-
-	for {
-
-		next, ok := s.queue.NextRun()
-		if ok {
-			timer.Reset(time.Until(next))
-		} else {
-			timer.Reset(s.idleTimeout)
-		}
-
-		select {
-		case <-s.stopCH:
-			return
-		case <-s.queue.AddChan():
-		case <-timer.C:
-			s.runJob()
-		}
-	}
-}
-
-func (s *Scheduler_v2) runJob() {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Job panicked: %v\n", r)
-		}
-	}()
-	s.queue.Execute()
+type Job struct {
+	ID       int
+	Interval time.Duration
+	LastRun  time.Time
+	NextRun  time.Time
+	Job      func()
 }
 
 type Jobs []*Job

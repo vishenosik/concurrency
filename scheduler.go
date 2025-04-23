@@ -1,53 +1,45 @@
 package concurrency
 
 import (
-	"container/heap"
 	"log"
 	"sync"
 	"time"
+
+	"github.com/pkg/errors"
 )
 
-type Job struct {
-	ID       int
-	Interval time.Duration
-	LastRun  time.Time
-	NextRun  time.Time
-	Job      func()
+type Queuer interface {
+	NextRun() (time.Time, bool)
+	Execute()
+	AddChan() <-chan struct{}
 }
 
-type Queue []*Job
-
-func (tq Queue) Len() int           { return len(tq) }
-func (tq Queue) Less(i, j int) bool { return tq[i].NextRun.Before(tq[j].NextRun) }
-func (tq Queue) Swap(i, j int)      { tq[i], tq[j] = tq[j], tq[i] }
-
-func (tq *Queue) Push(x any) {
-	if v, ok := x.(*Job); ok {
-		*tq = append(*tq, v)
-	}
-}
-
-func (tq *Queue) Pop() any {
-	old := *tq
-	n := len(old) - 1
-	item := old[n]
-	*tq = old[0:n]
-	return item
-}
+type SchedulerOption func(*Scheduler)
 
 type Scheduler struct {
-	queue    Queue
-	mu       sync.Mutex
-	addChan  chan *Job
-	stopChan chan struct{}
-	wg       sync.WaitGroup
+	queue       Queuer
+	idleTimeout time.Duration
+	stopCH      chan struct{}
+	wg          sync.WaitGroup
 }
 
-func NewScheduler() *Scheduler {
+func defaultScheduler() *Scheduler {
 	return &Scheduler{
-		addChan:  make(chan *Job, 1),
-		stopChan: make(chan struct{}),
+		idleTimeout: time.Hour,
+		stopCH:      make(chan struct{}),
 	}
+}
+
+func NewScheduler(queuer Queuer, opts ...SchedulerOption) (*Scheduler, error) {
+	scheduler := defaultScheduler()
+	if queuer == nil {
+		return nil, errors.New("Queue must not be nil")
+	}
+	scheduler.queue = queuer
+	for _, opt := range opts {
+		opt(scheduler)
+	}
+	return scheduler, nil
 }
 
 func (s *Scheduler) Start() {
@@ -56,12 +48,8 @@ func (s *Scheduler) Start() {
 }
 
 func (s *Scheduler) Stop() {
-	close(s.stopChan)
+	close(s.stopCH)
 	s.wg.Wait()
-}
-
-func (s *Scheduler) AddTask(task *Job) {
-	s.addChan <- task
 }
 
 func (s *Scheduler) run() {
@@ -74,26 +62,18 @@ func (s *Scheduler) run() {
 	defer timer.Stop()
 
 	for {
-		s.mu.Lock()
 
-		log.Println("task queue state", s.queue)
-
-		if len(s.queue) > 0 {
-			timer.Reset(time.Until(s.queue[0].NextRun))
+		next, ok := s.queue.NextRun()
+		if ok {
+			timer.Reset(time.Until(next))
 		} else {
-			timer.Reset(time.Hour) // Long duration when empty
+			timer.Reset(s.idleTimeout)
 		}
-		s.mu.Unlock()
 
 		select {
-		case <-s.stopChan:
+		case <-s.stopCH:
 			return
-
-		case task := <-s.addChan:
-			s.mu.Lock()
-			heap.Push(&s.queue, task)
-			s.mu.Unlock()
-
+		case <-s.queue.AddChan():
 		case <-timer.C:
 			s.runJob()
 		}
@@ -101,30 +81,10 @@ func (s *Scheduler) run() {
 }
 
 func (s *Scheduler) runJob() {
-	s.mu.Lock()
-	if len(s.queue) == 0 {
-		s.mu.Unlock()
-		return
-	}
-
-	currentTask := heap.Pop(&s.queue).(*Job)
-	s.mu.Unlock()
-
-	now := time.Now()
-
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("Job %d panicked: %v\n", currentTask.ID, r)
+			log.Printf("Job panicked: %v\n", r)
 		}
 	}()
-	currentTask.Job()
-
-	log.Printf("Job %d rescheduled\n", currentTask.ID)
-
-	// Reschedule the task
-	currentTask.LastRun = now
-	currentTask.NextRun = now.Add(currentTask.Interval)
-	s.mu.Lock()
-	heap.Push(&s.queue, currentTask)
-	s.mu.Unlock()
+	s.queue.Execute()
 }
