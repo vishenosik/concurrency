@@ -2,32 +2,35 @@ package concurrency
 
 import (
 	"container/heap"
-	"log"
+	"errors"
 	"sync"
 	"time"
 )
 
-type Job struct {
-	ID       int
-	Interval time.Duration
-	LastRun  time.Time
-	NextRun  time.Time
-	Job      func()
+type Job interface {
+	NextRun() time.Time
+	Run()
+	Reset()
 }
 
-type Jobs []*Job
+type JobList []Job
 
-func (jb Jobs) Len() int           { return len(jb) }
-func (jb Jobs) Less(i, j int) bool { return jb[i].NextRun.Before(jb[j].NextRun) }
-func (jb Jobs) Swap(i, j int)      { jb[i], jb[j] = jb[j], jb[i] }
+func NewJobList() *JobList {
+	list := make(JobList, 0)
+	return &list
+}
 
-func (jb *Jobs) Push(x any) {
-	if v, ok := x.(*Job); ok {
+func (jb JobList) Len() int           { return len(jb) }
+func (jb JobList) Less(i, j int) bool { return jb[i].NextRun().Before(jb[j].NextRun()) }
+func (jb JobList) Swap(i, j int)      { jb[i], jb[j] = jb[j], jb[i] }
+
+func (jb *JobList) Push(x any) {
+	if v, ok := x.(Job); ok {
 		*jb = append(*jb, v)
 	}
 }
 
-func (jb *Jobs) Pop() any {
+func (jb *JobList) Pop() any {
 	old := *jb
 	n := len(old) - 1
 	item := old[n]
@@ -35,60 +38,62 @@ func (jb *Jobs) Pop() any {
 	return item
 }
 
+func (jb *JobList) NextRun() (time.Time, bool) {
+	if len(*jb) <= 0 {
+		return time.Time{}, false
+	}
+	first := *jb
+	return first[0].NextRun(), true
+}
+
+type HeapQueuer interface {
+	heap.Interface
+	NextRun() (time.Time, bool)
+}
+
 type HeapQueue struct {
 	mu    sync.Mutex
-	queue Jobs
+	queue HeapQueuer
 	addCH chan struct{}
 }
 
-func NewHeapQueue() *HeapQueue {
+func NewHeapQueue(queue HeapQueuer) (*HeapQueue, error) {
+	if queue == nil {
+		return nil, errors.New("queue is nil")
+	}
 	return &HeapQueue{
 		addCH: make(chan struct{}, 1),
-		queue: make(Jobs, 0),
-	}
+		queue: queue,
+	}, nil
 }
 
-func (hq *HeapQueue) AddJob(job *Job) {
+func (hq *HeapQueue) AddJob(job Job) {
 	hq.mu.Lock()
-	heap.Push(&hq.queue, job)
+	heap.Push(hq.queue, job)
 	hq.mu.Unlock()
 	hq.addCH <- struct{}{}
 }
 
 func (hq *HeapQueue) NextRun() (time.Time, bool) {
-	if len(hq.queue) <= 0 {
-		return time.Time{}, false
-	}
-	return hq.queue[0].NextRun, true
+	return hq.queue.NextRun()
 }
 
 func (s *HeapQueue) Execute() {
 
 	s.mu.Lock()
-	if len(s.queue) == 0 {
+	if s.queue.Len() == 0 {
 		s.mu.Unlock()
 		return
 	}
-	currentTask := heap.Pop(&s.queue).(*Job)
+	currentTask := heap.Pop(s.queue).(Job)
 	s.mu.Unlock()
 
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("Job %d panicked: %v\n", currentTask.ID, r)
-			}
-		}()
-		currentTask.Job()
-	}()
+	go currentTask.Run()
 
-	log.Printf("Job %d rescheduled\n", currentTask.ID)
+	currentTask.Reset()
 
-	now := time.Now()
-	// Reschedule the task
-	currentTask.LastRun = now
-	currentTask.NextRun = now.Add(currentTask.Interval)
 	s.mu.Lock()
-	heap.Push(&s.queue, currentTask)
+	heap.Push(s.queue, currentTask)
 	s.mu.Unlock()
 }
 

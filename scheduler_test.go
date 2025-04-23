@@ -2,12 +2,18 @@ package concurrency
 
 import (
 	"log"
+	"strconv"
 	"testing"
 	"time"
 )
 
 func Test_Scheduler(t *testing.T) {
-	queue := NewHeapQueue()
+
+	queue, err := NewHeapQueue(NewJobList())
+	if err != nil {
+		panic(err)
+	}
+
 	scheduler, err := NewScheduler(queue)
 	if err != nil {
 		panic(err)
@@ -17,7 +23,7 @@ func Test_Scheduler(t *testing.T) {
 
 	// Add 1000 tasks with different intervals
 	for i := 1; i < 3; i++ {
-		taskID := i
+		taskID := strconv.Itoa(i)
 		interval := time.Second * time.Duration(i) // Varying intervals 1-60 seconds
 
 		if i == 2 {
@@ -26,17 +32,14 @@ func Test_Scheduler(t *testing.T) {
 
 		log.Println(taskID, interval)
 
-		queue.AddJob(&Job{
-			ID:       taskID,
-			Interval: interval,
-			NextRun:  time.Now().Add(time.Duration(i) * time.Millisecond), // Stagger start times
-			Job: func() {
+		queue.AddJob(NewIntervalJob(
+			taskID,
+			interval,
+			time.Now().Add(time.Duration(i)*time.Millisecond),
+			func() {
 				time.Sleep(time.Millisecond * 400)
-				log.Printf("Task %d executed at %v\n", taskID, time.Now().Format("15:04:05.000"))
+				log.Printf("Task %s executed at %v\n", taskID, time.Now().Format("15:04:05.000"))
 			},
-		})
+		))
 	}
-
-	// Run for 5 minutes
-	time.Sleep(5 * time.Minute)
 }
