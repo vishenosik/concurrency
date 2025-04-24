@@ -8,8 +8,8 @@ import (
 
 type QueueManager interface {
 	Next() (time.Time, bool)
-	Execute()
-	AddJob(job Job)
+	Run()
+	Add(job Job)
 }
 
 type Scheduler struct {
@@ -58,8 +58,8 @@ func (s *Scheduler) Stop() {
 	s.wg.Wait()
 }
 
-func (s *Scheduler) AddJob(job Job) {
-	s.queue.AddJob(job)
+func (s *Scheduler) Add(job Job) {
+	s.queue.Add(job)
 	s.addCH <- struct{}{}
 }
 
@@ -97,7 +97,7 @@ func (s *Scheduler) runJob() {
 			log.Printf("Job panicked: %v\n", r)
 		}
 	}()
-	s.queue.Execute()
+	s.queue.Run()
 }
 
 func WithQueueManager(QueueManager QueueManager) SchedulerOption {

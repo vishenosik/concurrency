@@ -82,7 +82,7 @@ func NewHeapQueue() (*HeapQueue, error) {
 	return queue, nil
 }
 
-func (hq *HeapQueue) AddJob(job Job) {
+func (hq *HeapQueue) Add(job Job) {
 	hq.mu.Lock()
 	heap.Push(hq.queue, job)
 	hq.mu.Unlock()
@@ -92,7 +92,7 @@ func (hq *HeapQueue) Next() (time.Time, bool) {
 	return hq.queue.Next()
 }
 
-func (s *HeapQueue) Execute() {
+func (s *HeapQueue) Run() {
 
 	s.mu.Lock()
 	if s.queue.Len() == 0 {

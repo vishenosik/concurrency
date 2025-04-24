@@ -27,7 +27,7 @@ func Test_Scheduler(t *testing.T) {
 
 		log.Println(taskID, interval)
 
-		scheduler.AddJob(NewIntervalJob(
+		scheduler.Add(NewIntervalJob(
 			taskID,
 			interval,
 			time.Now().Add(time.Duration(i)*time.Millisecond),
