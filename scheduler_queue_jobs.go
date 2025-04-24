@@ -8,16 +8,16 @@ import (
 type IntervalJob struct {
 	id       string
 	interval time.Duration
-	lastRun  time.Time
-	nextRun  time.Time
+	last     time.Time
+	next     time.Time
 	run      func()
 }
 
-func NewIntervalJob(id string, interval time.Duration, nextRun time.Time, job func()) *IntervalJob {
+func NewIntervalJob(id string, interval time.Duration, Next time.Time, job func()) *IntervalJob {
 	return &IntervalJob{
 		id:       id,
 		interval: interval,
-		nextRun:  nextRun,
+		next:     Next,
 		run:      job,
 	}
 }
@@ -33,10 +33,10 @@ func (jb *IntervalJob) Run() {
 
 func (jb *IntervalJob) Reset() {
 	now := time.Now()
-	jb.lastRun = now
-	jb.nextRun = now.Add(jb.interval)
+	jb.last = now
+	jb.next = now.Add(jb.interval)
 }
 
-func (jb *IntervalJob) NextRun() time.Time {
-	return jb.nextRun
+func (jb *IntervalJob) Next() time.Time {
+	return jb.next
 }

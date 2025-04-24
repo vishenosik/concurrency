@@ -8,7 +8,7 @@ import (
 )
 
 type Job interface {
-	NextRun() time.Time
+	Next() time.Time
 	Run()
 	Reset()
 }
@@ -21,7 +21,7 @@ func NewJobList() *JobList {
 }
 
 func (jb JobList) Len() int           { return len(jb) }
-func (jb JobList) Less(i, j int) bool { return jb[i].NextRun().Before(jb[j].NextRun()) }
+func (jb JobList) Less(i, j int) bool { return jb[i].Next().Before(jb[j].Next()) }
 func (jb JobList) Swap(i, j int)      { jb[i], jb[j] = jb[j], jb[i] }
 
 func (jb *JobList) Push(x any) {
@@ -38,17 +38,17 @@ func (jb *JobList) Pop() any {
 	return item
 }
 
-func (jb *JobList) NextRun() (time.Time, bool) {
+func (jb *JobList) Next() (time.Time, bool) {
 	if len(*jb) <= 0 {
 		return time.Time{}, false
 	}
 	first := *jb
-	return first[0].NextRun(), true
+	return first[0].Next(), true
 }
 
 type HeapQueuer interface {
 	heap.Interface
-	NextRun() (time.Time, bool)
+	Next() (time.Time, bool)
 }
 
 type HeapQueue struct {
@@ -74,8 +74,8 @@ func (hq *HeapQueue) AddJob(job Job) {
 	hq.addCH <- struct{}{}
 }
 
-func (hq *HeapQueue) NextRun() (time.Time, bool) {
-	return hq.queue.NextRun()
+func (hq *HeapQueue) Next() (time.Time, bool) {
+	return hq.queue.Next()
 }
 
 func (s *HeapQueue) Execute() {

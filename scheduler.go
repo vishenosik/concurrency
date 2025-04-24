@@ -9,7 +9,7 @@ import (
 )
 
 type Queuer interface {
-	NextRun() (time.Time, bool)
+	Next() (time.Time, bool)
 	Execute()
 	AddChan() <-chan struct{}
 }
@@ -63,7 +63,7 @@ func (s *Scheduler) run() {
 
 	for {
 
-		next, ok := s.queue.NextRun()
+		next, ok := s.queue.Next()
 		if ok {
 			timer.Reset(time.Until(next))
 		} else {
@@ -87,4 +87,39 @@ func (s *Scheduler) runJob() {
 		}
 	}()
 	s.queue.Execute()
+}
+
+type heapScheduler struct {
+	scheduler *Scheduler
+	queue     *HeapQueue
+}
+
+func NewHeapScheduler() (*heapScheduler, error) {
+	queue, err := NewHeapQueue(NewJobList())
+	if err != nil {
+		return nil, err
+	}
+
+	scheduler, err := NewScheduler(queue)
+	if err != nil {
+		return nil, err
+	}
+
+	return &heapScheduler{
+		scheduler: scheduler,
+		queue:     queue,
+	}, nil
+
+}
+
+func (hs *heapScheduler) AddJob(job Job) {
+	hs.queue.AddJob(job)
+}
+
+func (hs *heapScheduler) Start() {
+	hs.scheduler.Start()
+}
+
+func (hs *heapScheduler) Stop() {
+	hs.scheduler.Stop()
 }
