@@ -4,38 +4,43 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/pkg/errors"
 )
 
-type Queuer interface {
+type QueueManager interface {
 	Next() (time.Time, bool)
 	Execute()
-	AddChan() <-chan struct{}
+	AddJob(job Job)
 }
 
-type SchedulerOption func(*Scheduler)
-
 type Scheduler struct {
-	queue       Queuer
+	queue       QueueManager
 	idleTimeout time.Duration
+	addCH       chan struct{}
 	stopCH      chan struct{}
 	wg          sync.WaitGroup
 }
 
+type SchedulerOption func(*Scheduler)
+
 func defaultScheduler() *Scheduler {
 	return &Scheduler{
+		queue:       MustInitHeapQueue(),
 		idleTimeout: time.Hour,
 		stopCH:      make(chan struct{}),
+		addCH:       make(chan struct{}),
 	}
 }
 
-func NewScheduler(queuer Queuer, opts ...SchedulerOption) (*Scheduler, error) {
-	scheduler := defaultScheduler()
-	if queuer == nil {
-		return nil, errors.New("Queue must not be nil")
+func MustInitScheduler(opts ...SchedulerOption) *Scheduler {
+	scheduler, err := NewScheduler(opts...)
+	if err != nil {
+		panic(err)
 	}
-	scheduler.queue = queuer
+	return scheduler
+}
+
+func NewScheduler(opts ...SchedulerOption) (*Scheduler, error) {
+	scheduler := defaultScheduler()
 	for _, opt := range opts {
 		opt(scheduler)
 	}
@@ -49,7 +54,13 @@ func (s *Scheduler) Start() {
 
 func (s *Scheduler) Stop() {
 	close(s.stopCH)
+	close(s.addCH)
 	s.wg.Wait()
+}
+
+func (s *Scheduler) AddJob(job Job) {
+	s.queue.AddJob(job)
+	s.addCH <- struct{}{}
 }
 
 func (s *Scheduler) run() {
@@ -73,7 +84,7 @@ func (s *Scheduler) run() {
 		select {
 		case <-s.stopCH:
 			return
-		case <-s.queue.AddChan():
+		case <-s.addCH:
 		case <-timer.C:
 			s.runJob()
 		}
@@ -89,37 +100,10 @@ func (s *Scheduler) runJob() {
 	s.queue.Execute()
 }
 
-type heapScheduler struct {
-	scheduler *Scheduler
-	queue     *HeapQueue
-}
-
-func NewHeapScheduler() (*heapScheduler, error) {
-	queue, err := NewHeapQueue(NewJobList())
-	if err != nil {
-		return nil, err
+func WithQueueManager(QueueManager QueueManager) SchedulerOption {
+	return func(s *Scheduler) {
+		if QueueManager != nil {
+			s.queue = QueueManager
+		}
 	}
-
-	scheduler, err := NewScheduler(queue)
-	if err != nil {
-		return nil, err
-	}
-
-	return &heapScheduler{
-		scheduler: scheduler,
-		queue:     queue,
-	}, nil
-
-}
-
-func (hs *heapScheduler) AddJob(job Job) {
-	hs.queue.AddJob(job)
-}
-
-func (hs *heapScheduler) Start() {
-	hs.scheduler.Start()
-}
-
-func (hs *heapScheduler) Stop() {
-	hs.scheduler.Stop()
 }

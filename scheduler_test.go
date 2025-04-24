@@ -9,12 +9,7 @@ import (
 
 func Test_Scheduler(t *testing.T) {
 
-	queue, err := NewHeapQueue(NewJobList())
-	if err != nil {
-		panic(err)
-	}
-
-	scheduler, err := NewScheduler(queue)
+	scheduler, err := NewScheduler()
 	if err != nil {
 		panic(err)
 	}
@@ -32,7 +27,7 @@ func Test_Scheduler(t *testing.T) {
 
 		log.Println(taskID, interval)
 
-		queue.AddJob(NewIntervalJob(
+		scheduler.AddJob(NewIntervalJob(
 			taskID,
 			interval,
 			time.Now().Add(time.Duration(i)*time.Millisecond),

@@ -2,7 +2,6 @@ package concurrency
 
 import (
 	"container/heap"
-	"errors"
 	"sync"
 	"time"
 )
@@ -15,9 +14,17 @@ type Job interface {
 
 type JobList []Job
 
-func NewJobList() *JobList {
+func MustInitJobList() *JobList {
+	list, err := NewJobList()
+	if err != nil {
+		panic(err)
+	}
+	return list
+}
+
+func NewJobList() (*JobList, error) {
 	list := make(JobList, 0)
-	return &list
+	return &list, nil
 }
 
 func (jb JobList) Len() int           { return len(jb) }
@@ -46,32 +53,39 @@ func (jb *JobList) Next() (time.Time, bool) {
 	return first[0].Next(), true
 }
 
-type HeapQueuer interface {
+type HeapQueueManager interface {
 	heap.Interface
 	Next() (time.Time, bool)
 }
 
 type HeapQueue struct {
 	mu    sync.Mutex
-	queue HeapQueuer
-	addCH chan struct{}
+	queue HeapQueueManager
 }
 
-func NewHeapQueue(queue HeapQueuer) (*HeapQueue, error) {
-	if queue == nil {
-		return nil, errors.New("queue is nil")
-	}
+func defaultHeapQueue() *HeapQueue {
 	return &HeapQueue{
-		addCH: make(chan struct{}, 1),
-		queue: queue,
-	}, nil
+		queue: MustInitJobList(),
+	}
+}
+
+func MustInitHeapQueue() *HeapQueue {
+	hq, err := NewHeapQueue()
+	if err != nil {
+		panic(err)
+	}
+	return hq
+}
+
+func NewHeapQueue() (*HeapQueue, error) {
+	queue := defaultHeapQueue()
+	return queue, nil
 }
 
 func (hq *HeapQueue) AddJob(job Job) {
 	hq.mu.Lock()
 	heap.Push(hq.queue, job)
 	hq.mu.Unlock()
-	hq.addCH <- struct{}{}
 }
 
 func (hq *HeapQueue) Next() (time.Time, bool) {
@@ -95,8 +109,4 @@ func (s *HeapQueue) Execute() {
 	s.mu.Lock()
 	heap.Push(s.queue, currentTask)
 	s.mu.Unlock()
-}
-
-func (hq *HeapQueue) AddChan() <-chan struct{} {
-	return hq.addCH
 }
