@@ -18,6 +18,7 @@ type Scheduler struct {
 	addCH       chan struct{}
 	stopCH      chan struct{}
 	wg          sync.WaitGroup
+	stopped     bool
 }
 
 type SchedulerOption func(*Scheduler)
@@ -48,17 +49,25 @@ func NewScheduler(opts ...SchedulerOption) (*Scheduler, error) {
 }
 
 func (s *Scheduler) Start() {
+	s.stopped = false
 	s.wg.Add(1)
 	go s.run()
 }
 
 func (s *Scheduler) Stop() {
+	if s.stopped {
+		return
+	}
 	close(s.stopCH)
 	close(s.addCH)
 	s.wg.Wait()
+	s.stopped = true
 }
 
 func (s *Scheduler) Add(job Job) {
+	if s.stopped {
+		return
+	}
 	s.queue.Add(job)
 	s.addCH <- struct{}{}
 }
