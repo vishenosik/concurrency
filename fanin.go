@@ -56,14 +56,16 @@ func MergeChannelsIter[Type any, Uint Unsigned](
 }
 
 func merger[Type any](ctx context.Context, in, out chan Type) {
-	select {
-	case <-ctx.Done():
-		log.Println(ctx.Err())
-		return
-	case val, ok := <-in:
-		if !ok {
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println(ctx.Err())
 			return
+		case val, ok := <-in:
+			if !ok {
+				return
+			}
+			out <- val
 		}
-		out <- val
 	}
 }
