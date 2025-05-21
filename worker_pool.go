@@ -96,25 +96,25 @@ type Task struct {
 }
 
 type Pool struct {
-	// workers control
+	// Workers control
 	numWorkers  atomic.Int32
 	mu          sync.RWMutex // protects min/max workers
 	minWorkers  int32
 	maxWorkers  int32
 	initWorkers int32
 
-	// scaling timeouts
+	// Scaling timeouts
 	upTimeout   time.Duration
 	downTimeout time.Duration
 	taskTimeout time.Duration
 
-	// channels
-	bufferCH_1 chan Task
+	// Channels
 	bufferCH_0 chan Task
-	taskCH     chan Task
+	bufferCH_1 chan Task
+	addCH      chan struct{}
 	closed     atomic.Bool
 
-	// context
+	// Context
 	ctx       context.Context
 	cancelCtx context.CancelFunc
 
@@ -123,25 +123,11 @@ type Pool struct {
 
 	workerStats sync.Map // map[int32]*WorkerStats
 
-	// synchronization
+	// Synchronization
 	wg sync.WaitGroup
 }
 
 type PoolOption func(*Pool)
-
-func defaultWP() *Pool {
-	return &Pool{
-		minWorkers:  3,
-		maxWorkers:  256,
-		initWorkers: 10,
-		upTimeout:   time.Millisecond * 20,
-		downTimeout: time.Millisecond * 100,
-		taskTimeout: time.Second * 15,
-		taskCH:      make(chan Task),
-		bufferCH_0:  make(chan Task, 1024),
-		bufferCH_1:  make(chan Task, 1024),
-	}
-}
 
 func NewWorkerPool(opts ...PoolOption) *Pool {
 	return NewWorkerPoolContext(context.Background(), opts...)
@@ -149,7 +135,18 @@ func NewWorkerPool(opts ...PoolOption) *Pool {
 
 func NewWorkerPoolContext(ctx context.Context, opts ...PoolOption) *Pool {
 
-	p := defaultWP()
+	p := &Pool{
+		minWorkers:  3,
+		maxWorkers:  256,
+		initWorkers: 10,
+		upTimeout:   time.Millisecond * 20,
+		downTimeout: time.Millisecond * 100,
+		taskTimeout: time.Second * 15,
+		addCH:       make(chan struct{}, 1024),
+		bufferCH_0:  make(chan Task, 1024),
+		bufferCH_1:  make(chan Task, 1024),
+	}
+
 	p.ctx, p.cancelCtx = context.WithCancel(ctx)
 
 	for _, opt := range opts {
@@ -186,14 +183,14 @@ func WithTimeouts(up, down time.Duration) PoolOption {
 	}
 }
 
-func (p *Pool) Start() {
+func (p *Pool) Start(_ context.Context) error {
 	for range p.initWorkers {
 		p.addWorker()
 	}
 
 	go func() {
 		defer func() {
-			close(p.taskCH)
+			close(p.addCH)
 		}()
 		for {
 			if p.closed.Load() {
@@ -202,7 +199,7 @@ func (p *Pool) Start() {
 			select {
 			case <-p.ctx.Done():
 				return
-			case p.taskCH <- <-p.bufferCH_0:
+			case <-p.addCH:
 			case <-time.After(p.upTimeout):
 				p.addWorker()
 			}
@@ -214,6 +211,7 @@ func (p *Pool) Start() {
 		p.close()
 		close(p.bufferCH_0)
 	}()
+	return nil
 }
 
 func (p *Pool) close() {
@@ -224,8 +222,9 @@ func (p *Pool) close() {
 	p.cancelCtx()
 }
 
-func (p *Pool) Stop() {
+func (p *Pool) Stop(_ context.Context) error {
 	p.close()
+	return nil
 }
 
 func (p *Pool) AddTask(task Task) (string, error) {
@@ -237,22 +236,23 @@ func (p *Pool) AddTask(task Task) (string, error) {
 		task.ID = fmt.Sprintf("task_%d_%s", time.Now().UnixNano(), task.Priority)
 	}
 
-	if task.Priority == PriorityHigh {
+	_select := func(ch chan Task) (string, error) {
 		select {
-		case p.bufferCH_1 <- task:
+		case ch <- task:
 			return task.ID, nil
 		case <-p.ctx.Done():
 			return "", p.ctx.Err()
 		}
 	}
 
-	select {
-	case p.bufferCH_0 <- task:
-		return task.ID, nil
-	case <-p.ctx.Done():
-		return "", p.ctx.Err()
+	switch task.Priority {
+	case PriorityLow:
+		return _select(p.bufferCH_0)
+	case PriorityHigh:
+		return _select(p.bufferCH_1)
+	default:
+		return _select(p.bufferCH_0)
 	}
-
 }
 
 func (p *Pool) addWorker() {
@@ -307,7 +307,7 @@ func (p *Pool) worker(id int32) {
 			p.executeTask(ws, task, timer)
 
 		// Then normal priority
-		case task, ok := <-p.taskCH:
+		case task, ok := <-p.bufferCH_0:
 			if !ok {
 				return
 			}

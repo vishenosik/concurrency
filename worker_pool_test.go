@@ -43,7 +43,7 @@ func Test_WorkerPool_Lifecycle(t *testing.T) {
 		WithWorkersControl(2, 5, 2),
 		WithTimeouts(time.Millisecond*100, time.Millisecond*150),
 	)
-	pool.Start()
+	pool.Start(context.TODO())
 
 	time.Sleep(time.Second)
 
@@ -64,7 +64,7 @@ func Test_WorkerPool_Lifecycle(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	require.Equal(t, int32(2), pool.numWorkers.Load())
 
-	pool.Stop()
+	pool.Stop(context.TODO())
 
 	// Verify pool is closed
 	_, err := pool.AddTask(Task{Func: func() {}})
@@ -73,8 +73,8 @@ func Test_WorkerPool_Lifecycle(t *testing.T) {
 
 func Test_WorkerPool_TaskExecution(t *testing.T) {
 	pool := NewWorkerPool(WithWorkersControl(1, 1, 1))
-	pool.Start()
-	defer pool.Stop()
+	pool.Start(context.TODO())
+	defer pool.Stop(context.TODO())
 
 	var executed atomic.Bool
 	_, err := pool.AddTask(Task{Func: func() { executed.Store(true) }})
@@ -86,8 +86,8 @@ func Test_WorkerPool_TaskExecution(t *testing.T) {
 
 func Test_WorkerPool_ConcurrentTaskSubmission(t *testing.T) {
 	pool := NewWorkerPool(WithWorkersControl(5, 20, 5))
-	pool.Start()
-	defer pool.Stop()
+	pool.Start(context.TODO())
+	defer pool.Stop(context.TODO())
 
 	var counter atomic.Int32
 	const numTasks = 1000
@@ -111,7 +111,7 @@ func Test_WorkerPool_ConcurrentTaskSubmission(t *testing.T) {
 func Test_WorkerPool_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := NewWorkerPoolContext(ctx, WithWorkersControl(1, 1, 1))
-	pool.Start()
+	pool.Start(context.TODO())
 
 	cancel()
 	time.Sleep(time.Millisecond * 50)
@@ -122,8 +122,8 @@ func Test_WorkerPool_ContextCancellation(t *testing.T) {
 
 func Test_WorkerPool_PanicRecovery(t *testing.T) {
 	pool := NewWorkerPool(WithWorkersControl(1, 1, 1))
-	pool.Start()
-	defer pool.Stop()
+	pool.Start(context.TODO())
+	defer pool.Stop(context.TODO())
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -139,19 +139,19 @@ func Test_WorkerPool_PanicRecovery(t *testing.T) {
 
 func Test_WorkerPool_CloseBehavior(t *testing.T) {
 	pool := NewWorkerPool(WithWorkersControl(1, 1, 1))
-	pool.Start()
+	pool.Start(context.TODO())
 
 	// Add task before closing
 	_, err := pool.AddTask(Task{Func: func() {}})
 	require.NoError(t, err)
 
-	pool.Stop()
+	pool.Stop(context.TODO())
 
 	require.True(t, pool.closed.Load())
 
 	// Verify channels are closed
 	select {
-	case _, ok := <-pool.taskCH:
+	case _, ok := <-pool.addCH:
 		require.False(t, ok)
 	case <-time.After(100 * time.Millisecond):
 		t.Error("timeout waiting for task channel")
@@ -160,8 +160,8 @@ func Test_WorkerPool_CloseBehavior(t *testing.T) {
 
 func BenchmarkWorkerPool(b *testing.B) {
 	pool := NewWorkerPool(WithWorkersControl(10, 100, 10))
-	pool.Start()
-	defer pool.Stop()
+	pool.Start(context.TODO())
+	defer pool.Stop(context.TODO())
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -176,8 +176,8 @@ func BenchmarkWorkerPool(b *testing.B) {
 
 func BenchmarkWorkerPoolHeavyWork(b *testing.B) {
 	pool := NewWorkerPool(WithWorkersControl(10, 100, 10))
-	pool.Start()
-	defer pool.Stop()
+	pool.Start(context.TODO())
+	defer pool.Stop(context.TODO())
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -195,8 +195,8 @@ func BenchmarkWorkerPoolScaleUp(b *testing.B) {
 		WithWorkersControl(1, 100, 1),
 		WithTimeouts(10*time.Millisecond, 0),
 	)
-	pool.Start()
-	defer pool.Stop()
+	pool.Start(context.TODO())
+	defer pool.Stop(context.TODO())
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
